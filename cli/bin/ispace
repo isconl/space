@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# isconl/space/cli/bin/ispace
+# Space system entry point — domain portfolio: projects, contacts, KPIs.
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANGELOG (newest first)
+# ─────────────────────────────────────────────────────────────────────────────
+#   v2.3.0  2026-04-30  Standalone repo structure. Shared libs from
+#                       ~/.local/lib/sconl/. Data from tenant.toml.
+#   v2.2.1  2026-04-20  ispace entry point (was sconlx space)
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATH RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
+_SPACE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SPACE_ROOT="$(cd "$_SPACE_BIN/../.." && pwd)"
+_SPACE_CLI_LIB="$_SPACE_ROOT/cli/lib"
+_SHARED_LIB="${HOME}/.local/lib/sconl"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED LIB CHECK
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ ! -f "$_SHARED_LIB/ui.sh" ]]; then
+  printf '  x  Shared libs not found at %s\n' "$_SHARED_LIB" >&2
+  printf '     Run: hub/install.sh  or  space/install.sh\n' >&2
+  exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TENANT CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+_TENANT_TOML="${HOME}/.config/sconl/tenant.toml"
+
+_read_toml_value() {
+  local file="$1" key="$2"
+  grep -E "^${key}\s*=" "$file" 2>/dev/null \
+    | head -1 \
+    | sed 's/.*=\s*"\(.*\)"/\1/'
+}
+
+if [[ -f "$_TENANT_TOML" ]]; then
+  _SPACE_DATA_DIR="$(_read_toml_value "$_TENANT_TOML" "space_dir")"
+  _SCOPE_DATA_DIR="$(_read_toml_value "$_TENANT_TOML" "scope_dir")"
+  _SHARED_LIB_DIR="$(_read_toml_value "$_TENANT_TOML" "shared_lib_dir")"
+  _CALENDARX_DIR="$(_read_toml_value "$_TENANT_TOML" "calendarx_dir")"
+  [[ -n "$_SHARED_LIB_DIR" ]] && _SHARED_LIB="$_SHARED_LIB_DIR"
+  [[ -n "$_CALENDARX_DIR" ]]  && _CALX_CORE="$_CALENDARX_DIR/core/sconl_calendar"
+fi
+
+[[ -z "${_SPACE_DATA_DIR:-}" ]] && _SPACE_DATA_DIR="$_SPACE_ROOT/data"
+[[ -z "${_SCOPE_DATA_DIR:-}" ]] && _SCOPE_DATA_DIR="$_SPACE_ROOT/../scope/data"
+
+if [[ -z "${_CALX_CORE:-}" ]]; then
+  _CALX_CORE="$(cd "$_SPACE_ROOT/../calendar-core/core/sconl_calendar" 2>/dev/null && pwd)" || \
+  _CALX_CORE=""
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PYTHON ENGINE PATH RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
+_py_path() {
+  local canonical="$1" legacy="$2" label="$3"
+  if [[ -f "$canonical" ]]; then printf '%s' "$canonical"; return 0; fi
+  if [[ -f "$legacy" ]]; then
+    printf '  !  %s at legacy path\n' "$label" >&2
+    printf '%s' "$legacy"; return 0
+  fi
+  printf '  x  %s not found\n' "$label" >&2
+  printf '%s' "$canonical"; return 1
+}
+
+_LEGACY_LIB="$(cd "$_SPACE_ROOT/../../XCore/xspace/isconl-space/lib" 2>/dev/null && pwd)" || \
+  _LEGACY_LIB=""
+
+_EQUICYCLE_PY="$(_py_path \
+  "${_CALX_CORE:-}/equicycle.py" \
+  "${_LEGACY_LIB:-}/equicycle.py" \
+  "equicycle.py")" || true
+
+_CAL_PY="$(_py_path \
+  "${_CALX_CORE:-}/calendar_data.py" \
+  "${_LEGACY_LIB:-}/calendar_data.py" \
+  "calendar_data.py")" || true
+
+export _EQUICYCLE_PY _CAL_PY
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPORT PATHS FOR SOURCED LIBS
+# Space needs both its own data dir AND scope data dir (for task bridging)
+# ─────────────────────────────────────────────────────────────────────────────
+export _FLAT_DIR="${HOME}/.local/share/sconl/data"
+export _FLAT_SCOPE_DIR="$_SCOPE_DATA_DIR"
+export _ISCONLSPACE_LIB_DIR="$_SPACE_CLI_LIB"
+export _ISCONLSPACE_DATA_DIR="$_SPACE_DATA_DIR"
+export _ISCONLSPACE_DIR="$_SPACE_ROOT"
+
+IFS=$'\n\t'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE LIBS
+# ─────────────────────────────────────────────────────────────────────────────
+source "$_SHARED_LIB/ui.sh"
+source "$_SHARED_LIB/db.sh"
+source "$_SHARED_LIB/events.sh"
+source "$_SPACE_CLI_LIB/space.sh"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INIT
+# ─────────────────────────────────────────────────────────────────────────────
+_db_init
+
+set -- space "$@"
+
+case "${1:-}" in
+  --version|-v)
+    printf 'ispace 2.3.0 (%s mode)\n' "$_DATA_MODE"
+    printf 'data: %s\n' "$_SPACE_DATA_DIR"
+    exit 0 ;;
+  --help|-h)
+    printf 'Usage: ispace [list|show|add|review|project|kpi|contact|health]\n'
+    exit 0 ;;
+esac
+
+_space_route "${@:2}"
